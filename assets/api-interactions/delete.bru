@@ -1,0 +1,18 @@
+meta {
+  name: delete
+  type: http
+  seq: 4
+}
+
+delete {
+  url: http://localhost:8080/points/7
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "content": "hello",
+    "urgency": 123
+  }
+}

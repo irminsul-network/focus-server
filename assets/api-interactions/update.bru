@@ -1,0 +1,18 @@
+meta {
+  name: update
+  type: http
+  seq: 3
+}
+
+patch {
+  url: http://localhost:8080/points/2
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "content": "hello",
+    "urgency": 123
+  }
+}

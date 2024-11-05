@@ -1,0 +1,18 @@
+meta {
+  name: create
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://localhost:8080/points/
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "content": "hello",
+    "urgency": 1
+  }
+}
