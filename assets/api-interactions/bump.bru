@@ -1,0 +1,18 @@
+meta {
+  name: bump
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{url}}/points/5/bump
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "encountered": -3,
+    "conquered": 3
+  }
+}
