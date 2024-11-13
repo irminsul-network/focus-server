@@ -3,174 +3,223 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"io"
+	"errors"
+	errs "github.com/irminsul-network/focus-server/src/errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
-	"time"
 )
 
 func registerHandlers(app *App) {
 
+	pm := &DbPointManager{
+		app.db,
+	}
 	http.HandleFunc("/points/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" {
-			subPath := strings.TrimPrefix(r.URL.Path, "/points/")
-			if subPath == "" {
-				postPoints(app, r, w)
-			} else if strings.HasSuffix(subPath, "/bump") {
-				id := strings.TrimSuffix(subPath, "/bump")
-				bump(r.Context(), app, id, r.Body, w)
+		HandleGlobalErrors(w, func() error {
 
-			}
-
-		} else if r.Method == "DELETE" {
-
-			ctx, cancel := context.WithCancel(r.Context())
-			defer cancel()
-
-			var point Point
-			err := json.NewDecoder(r.Body).Decode(&point)
-			if err != nil {
-				log.Println(err)
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-
-			id := strings.TrimPrefix(r.URL.Path, "/points/")
-			if id == "" {
-				http.Error(w, "ID required", http.StatusBadRequest)
-			}
-			res, err := app.db.ExecContext(ctx, "delete from point  where id = $1", id)
-
-			if err != nil {
-				log.Println(err)
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
-
-			rows, err := res.RowsAffected()
-
-			if err != nil {
-				log.Println(err)
-				return
-			}
-
-			if rows > 1 {
-				log.Println("too many records deleted for id: ", id, "records: ", rows)
-				w.WriteHeader(http.StatusInternalServerError)
-			}
-
-			if rows == 1 {
-				w.WriteHeader(http.StatusAccepted)
-				write(w, "ok")
-
-			} else if rows < 1 {
-				w.WriteHeader(http.StatusNotFound)
-				write(w, "not found")
-			}
-		} else if r.Method == "GET" {
-			ctx, cancel := context.WithCancel(r.Context())
-			defer cancel()
-
-			rows, err := app.db.QueryContext(ctx, "select id, content, encountered, conquered, created, archived, achieved from point")
-			if err != nil {
-				log.Println(err)
-				return
-			}
-			var points = make([]Point, 0)
-
-			for rows.Next() {
-				var point Point
-				err := rows.Scan(&point.Id, &point.Content, &point.Encountered, &point.Conquered, &point.Created, &point.Archived, &point.Achieved)
-				if err != nil {
-					log.Println(err)
-					return
+			if r.Method == "POST" {
+				subPath := strings.TrimPrefix(r.URL.Path, "/points/")
+				if subPath == "" {
+					return postPoints(pm, r, w)
 				}
-
-				points = append(points, point)
+				//} else if strings.HasSuffix(subPath, "/bump") {
+				//	id := strings.TrimSuffix(subPath, "/bump")
+				//	bump(r.Context(), app, id, r.Body, w)
+				//}
 			}
 
-			w.WriteHeader(http.StatusOK)
-			w.Header().Set("Content-Type", "application/json")
-			err = json.NewEncoder(w).Encode(points)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-		} else {
-			http.Error(w, "Invalid Operation", http.StatusMethodNotAllowed)
-		}
-		w.WriteHeader(http.StatusBadRequest)
+			//} else if r.Method == "DELETE" {
+			//	if deletePoint(w, r, app) {
+			//		return nil
+			//	}
+			//} else if r.Method == "GET" {
+			//	if getPoints(w, r, app) {
+			//		return nil
+			//	}
+			//} else {
+			//	http.Error(w, "Invalid Operation", http.StatusMethodNotAllowed)
+			//}
+			return errs.NewUserError("bad method", nil)
+		})
 
 	})
 }
 
-func bump(ctx context.Context, app *App, id string, body io.Reader, w http.ResponseWriter) {
-
-	var point Point
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	err := json.NewDecoder(body).Decode(&point)
-	if err != nil {
-		log.Println(err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+func HandleGlobalErrors(w http.ResponseWriter, f func() error) {
+	err := f()
+	if err == nil {
 		return
 	}
-
-	res, err := app.db.ExecContext(ctx, "update point set encountered = encountered + $1, conquered = conquered + $2 where id = $3",
-		point.Encountered, point.Conquered, id)
-	if err != nil {
-		log.Println(err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	var UserError errs.UserError
+	if errors.As(err, &UserError) {
+		log.Printf("User Error: %s%n", err)
+		http.Error(w, UserError.Error(), http.StatusBadRequest)
 	}
-
-	rows, err := res.RowsAffected()
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	if rows < 1 {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
-	if rows > 1 {
-		log.Println("too many records updated for id: ", id, "records: ", rows)
-		w.WriteHeader(http.StatusInternalServerError)
-	}
-
-	w.WriteHeader(http.StatusAccepted)
-	write(w, "ok")
-	return
-
+	log.Printf("Server Error: %s%n", err)
+	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
-func postPoints(app *App, r *http.Request, w http.ResponseWriter) {
+//func getPoints(w http.ResponseWriter, r *http.Request, app *App) bool {
+//	ctx, cancel := context.WithCancel(r.Context())
+//	defer cancel()
+//
+//	rows, err := app.db.QueryContext(ctx, `
+//		WITH encounter_counts AS (
+//		SELECT
+//			point_id,
+//			COUNT(*) AS total_encountered_count,
+//			SUM(CASE WHEN conquered = 1 THEN 1 ELSE 0 END) AS total_conquered_count,
+//			COUNT(CASE WHEN encountered_on >= strftime('%s', 'now', '-7 days') THEN 1 END) AS recent_encountered_count,
+//			SUM(CASE WHEN conquered = 1 AND encountered_on >= strftime('%s', 'now', '-7 days') THEN 1 ELSE 0 END) AS recent_conquered_count
+//		FROM point_encounters
+//		GROUP BY point_id
+//		)
+//		SELECT
+//			p.id,
+//			p.content,
+//			p.achieved,
+//			p.archived,
+//			ec.recent_encountered_count,
+//			ec.recent_conquered_count,
+//			ec.total_encountered_count,
+//			ec.total_conquered_count
+//		FROM
+//			point p
+//
+//		inner JOIN
+//			encounter_counts ec ON p.id = ec.point_id;
+//	`)
+//	if err != nil {
+//		log.Println(err)
+//		return true
+//	}
+//	var points = make([]EvaluatedPoint, 0)
+//
+//	for rows.Next() {
+//		var point Point
+//		err := rows.Scan(&point.Id, &point.Content, &point.Encountered, &point.Conquered, &point.Created, &point.Archived, &point.Achieved)
+//		if err != nil {
+//			log.Println(err)
+//			return true
+//		}
+//
+//		points = append(points, point)
+//	}
+//
+//	w.WriteHeader(http.StatusOK)
+//	w.Header().Set("Content-Type", "application/json")
+//	err = json.NewEncoder(w).Encode(points)
+//	if err != nil {
+//		log.Println(err)
+//		return true
+//	}
+//	return false
+//}
+
+//func deletePoint(w http.ResponseWriter, r *http.Request, app *App) bool {
+//	ctx, cancel := context.WithCancel(r.Context())
+//	defer cancel()
+//
+//	var point Point
+//	err := json.NewDecoder(r.Body).Decode(&point)
+//	if err != nil {
+//		log.Println(err)
+//		http.Error(w, err.Error(), http.StatusBadRequest)
+//		return true
+//	}
+//
+//	id := strings.TrimPrefix(r.URL.Path, "/points/")
+//	if id == "" {
+//		http.Error(w, "ID required", http.StatusBadRequest)
+//	}
+//	res, err := app.db.ExecContext(ctx, "delete from point  where id = $1", id)
+//
+//	if err != nil {
+//		log.Println(err)
+//		http.Error(w, err.Error(), http.StatusInternalServerError)
+//	}
+//
+//	rows, err := res.RowsAffected()
+//
+//	if err != nil {
+//		log.Println(err)
+//		return true
+//	}
+//
+//	if rows > 1 {
+//		log.Println("too many records deleted for id: ", id, "records: ", rows)
+//		w.WriteHeader(http.StatusInternalServerError)
+//	}
+//
+//	if rows == 1 {
+//		w.WriteHeader(http.StatusAccepted)
+//		write(w, "ok")
+//
+//	} else if rows < 1 {
+//		w.WriteHeader(http.StatusNotFound)
+//		write(w, "not found")
+//	}
+//	return false
+//}
+
+//func bump(ctx context.Context, app *App, id string, body io.Reader, w http.ResponseWriter) {
+//
+//	var point Point
+//	ctx, cancel := context.WithCancel(ctx)
+//	defer cancel()
+//
+//	err := json.NewDecoder(body).Decode(&point)
+//	if err != nil {
+//		log.Println(err)
+//		http.Error(w, err.Error(), http.StatusBadRequest)
+//		return
+//	}
+//
+//	res, err := app.db.ExecContext(ctx, "update point set encountered = encountered + $1, conquered = conquered + $2 where id = $3",
+//		point.Encountered, point.Conquered, id)
+//	if err != nil {
+//		log.Println(err)
+//		http.Error(w, err.Error(), http.StatusInternalServerError)
+//		return
+//	}
+//
+//	rows, err := res.RowsAffected()
+//	if err != nil {
+//		log.Println(err)
+//		return
+//	}
+//
+//	if rows < 1 {
+//		w.WriteHeader(http.StatusNotFound)
+//		return
+//	}
+//
+//	if rows > 1 {
+//		log.Println("too many records updated for id: ", id, "records: ", rows)
+//		w.WriteHeader(http.StatusInternalServerError)
+//	}
+//
+//	w.WriteHeader(http.StatusAccepted)
+//	write(w, "ok")
+//	return
+//
+//}
+
+func postPoints(pm PointManager, r *http.Request, w http.ResponseWriter) error {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	var point Point
+	var point CreatePoint
 	err := json.NewDecoder(r.Body).Decode(&point)
-	if err != nil {
-		log.Println(err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+	res, err := pm.createPoint(ctx, point)
+	if err == nil {
+		w.WriteHeader(http.StatusCreated)
+		write(w, strconv.FormatInt(res, 10))
 	}
-
-	_, err = app.db.ExecContext(ctx,
-		"insert into point(content, encountered, conquered, created, archived, achieved) values($1, $2, $3,$4, false, false)",
-		point.Content, point.Encountered, point.Conquered, time.Now().Unix())
-	if err != nil {
-		log.Print(err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusCreated)
-	write(w, "ok")
+	return err
 }
 
 //func patchPoints(app *App, r *http.Request, w http.ResponseWriter) {
@@ -225,16 +274,6 @@ func postPoints(app *App, r *http.Request, w http.ResponseWriter) {
 //		w.WriteHeader(http.StatusInternalServerError)
 //	}
 //}
-
-type Point struct {
-	Id          int64  `json:"id"`
-	Content     string `json:"content"`
-	Encountered int    `json:"encountered"`
-	Conquered   int    `json:"conquered"`
-	Created     int64  `json:"created"`
-	Achieved    bool   `json:"achieved"`
-	Archived    bool   `json:"archived"`
-}
 
 func write(w http.ResponseWriter, data string) {
 	_, err := w.Write([]byte(data))
